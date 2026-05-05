@@ -1,4 +1,4 @@
-import RPi.GPIO as GPIO
+﻿import RPi.GPIO as GPIO
 import time
 import requests
 import json
@@ -19,12 +19,11 @@ UP_BUTTON_PIN = 22
 DOWN_BUTTON_PIN = 16
 DOOR_BUTTON_PIN = 32
 
-# Initial desired temperature
 desired_temp = 75
 weather_index = 0
 current_weather_index = 0
 
-# this is for calculating the bill                                                   
+# track how long the HVAC runs (for potential billing calculation)
 hvac_start_time = 0
 hvac_end_time = 0
 
@@ -44,7 +43,6 @@ CURRENT_DOOR_STATE = DOOR_STATE.CLOSED
 PREV_HVAC_STATE = HVAC_STATE.IDLE
 CURRENT_HVAC_STATE = HVAC_STATE.IDLE
 
-# Setup GPIOs
 GPIO.setmode(GPIO.BOARD)
 GPIO.setup(RED_LED_PIN, GPIO.OUT)
 GPIO.setup(BLUE_LED_PIN, GPIO.OUT)
@@ -57,7 +55,6 @@ dht = DHT(DHT_PIN)
 
 @lru_cache(maxsize=24)
 def get_humidity_from_CIMIS(app_key=api_key, targets='75', start_date='2024-06-08', end_date='2024-06-08') -> int:
-    # TODO: implement function to retrieve humidity data from CIMIS system
     base_url = 'https://et.water.ca.gov/api/data'
     params = {
         'appKey': app_key,
@@ -68,7 +65,6 @@ def get_humidity_from_CIMIS(app_key=api_key, targets='75', start_date='2024-06-0
 
     response = requests.get(base_url, params=params)
     data = None
-    # Check if the request was successful
     if response.status_code == 200:
         try:
             data = json.loads(response.text)
@@ -81,7 +77,6 @@ def get_humidity_from_CIMIS(app_key=api_key, targets='75', start_date='2024-06-0
         for provider in providers:
             records = provider.get('Records', [])
             for record in records:
-                # Get the 'DayRelHumAvg' value
                 day_rel_hum_avg = record.get('DayRelHumAvg', {}).get('Value')
                 if day_rel_hum_avg is not None:
                     day_rel_hum_avg_values.append(day_rel_hum_avg)
@@ -108,7 +103,6 @@ def door_action(channel):
         write_temporary_message("Door is closed", duration=3)
         print('Door is closed')
         logging.info('Door is closed')
-        
 
 
 def adjust_desired_temp(channel):
@@ -119,7 +113,7 @@ def adjust_desired_temp(channel):
         print('desired temp is now ' + str(desired_temp))
         message = str(desired_temp) + '/' + str(weather_index)
         set_main_menu_message(message, 'temp')
-        write_temporary_message("Adjusted Temp:" + str(desired_temp), duration=3) 
+        write_temporary_message("Adjusted Temp:" + str(desired_temp), duration=3)
     else:
         desired_temp = max(65, desired_temp - 1)
         print('desired temp is now ' + str(desired_temp))
@@ -161,30 +155,29 @@ def turn_off_hvac():
     write_temporary_message("HVAC is off", duration=3)
     time.sleep(1.5)
 
-def control_hvac(temperature)-> Type[HVAC_STATE]:
+def control_hvac(temperature) -> Type[HVAC_STATE]:
     global current_weather_index, weather_index, desired_temp, CURRENT_DOOR_STATE, CURRENT_HVAC_STATE
-    # print current hvac state 
     print(f"Current HVAC state: {CURRENT_HVAC_STATE}")
     # format date for CIMIS API query parameters
     now = datetime.now() - timedelta(days=2)
     formatted_date = now.strftime('%Y-%m-%d')
-    # get humidity from CIMIS, loop until return value is not None since CIMIS API is unreliable
+    # loop until we get a valid response; CIMIS API occasionally returns None
     humidity = None
     while humidity is None:
         humidity = get_humidity_from_CIMIS(targets='75', start_date=formatted_date, end_date=formatted_date)
     print(f"Current humidity: {humidity}")
-    weather_index = calculate_weather_index(temperature, humidity) 
+    weather_index = calculate_weather_index(temperature, humidity)
     if current_weather_index != weather_index:
         current_weather_index = weather_index
         set_main_menu_message(str(desired_temp) + '/' + str(weather_index), 'temp')
         write_temporary_message("New WI:" + str(weather_index), duration=1.5)
     print(f"Current weather index: {weather_index}")
-    if 90 < weather_index: # fire alarm system is on
+    if 90 < weather_index:  # fire alarm: weather index too high
         write_message("Fire! HVAC OFF" + '\n' + 'Door/Window OPEN')
         logging.info('Fire alarm is started')
         CURRENT_DOOR_STATE = DOOR_STATE.OPEN
-        while(calculate_weather_index(round(read_temperture()), humidity) > 90):
-            flash_leds() 
+        while(calculate_weather_index(round(read_temperature()), humidity) > 90):
+            flash_leds()
         logging.info('Fire alarm is stopped')
         set_main_menu_message('', '')
         set_main_menu_message('SAFE', 'door')
@@ -195,26 +188,22 @@ def control_hvac(temperature)-> Type[HVAC_STATE]:
         turn_on_AC()
         return HVAC_STATE.COOL
     elif CURRENT_DOOR_STATE == DOOR_STATE.OPEN:
-        # turn off HVAC
         return HVAC_STATE.OFF
     elif weather_index > desired_temp + 3:
-        # turn on AC
         if CURRENT_HVAC_STATE != HVAC_STATE.COOL:
             turn_on_AC()
         return HVAC_STATE.COOL
     elif weather_index < desired_temp - 3:
-        # turn on heater
         if CURRENT_HVAC_STATE != HVAC_STATE.HEAT:
             turn_on_heater()
         return HVAC_STATE.HEAT
     else:
-        # turn off HVAC
         if CURRENT_HVAC_STATE != HVAC_STATE.OFF:
             turn_off_hvac()
-        return HVAC_STATE.OFF 
+        return HVAC_STATE.OFF
 
 def flash_leds():
-# flash both LEDs for one second periodically
+    # flash all LEDs for one second, used during fire alarm
     GPIO.output(RED_LED_PIN, GPIO.HIGH)
     GPIO.output(BLUE_LED_PIN, GPIO.HIGH)
     GPIO.output(GREEN_LED_PIN, GPIO.HIGH)
@@ -225,13 +214,12 @@ def flash_leds():
     time.sleep(1)
 
 
-def read_temperture() -> float:
+def read_temperature() -> float:
     for i in range(0, 5):
         chk = dht.readDHT11()
         if (chk is dht.DHTLIB_OK):
             return dht.temperature
 
-# Initialization
 def setup():
     GPIO.setwarnings(False)
     set_main_menu_message('SAFE', 'door')
@@ -239,14 +227,11 @@ def setup():
     GPIO.add_event_detect(DOWN_BUTTON_PIN, GPIO.RISING, callback=adjust_desired_temp, bouncetime=200)
     GPIO.add_event_detect(DOOR_BUTTON_PIN, GPIO.FALLING, callback=door_action, bouncetime=4000)
 
-# Loop
 def loop():
     global CURRENT_HVAC_STATE
-    temperature = round(read_temperture())
+    temperature = round(read_temperature())
     CURRENT_HVAC_STATE = control_hvac(temperature)
     time.sleep(1.5)
 
-# Cleanup
 def cleanup():
-    # clear all states
     GPIO.cleanup()
